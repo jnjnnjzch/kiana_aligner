@@ -1,0 +1,12 @@
+# 忽略Python的缓存文件夹
+__pycache__/
+*.egg-info/
+
+# 忽略虚拟环境文件夹（极其重要！）
+venv/
+.venv/
+env/
+
+# 忽略IDE的配置文件夹
+.vscode/
+.idea/

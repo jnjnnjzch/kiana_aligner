@@ -1,0 +1,46 @@
+# ===================================================================
+# pyproject.toml for KIANA
+# ===================================================================
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "kiana" 
+
+version = "0.1.0a1"
+
+# 作者信息
+authors = [
+  { name="ZHOU Chenghao", email="jnjnnjzch@gmail.com" },
+]
+
+description = "Kiana Is A Neural Aligner. A toolkit for synchronizing, integrating, and analyzing heterogeneous neuroscience data (ephys, behaviors, etc.)."
+
+readme = "README.md"
+
+requires-python = ">=3.8"
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "scipy",
+    "dtw-python",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha", # 项目目前处于Alpha开发阶段
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License", # 假设您使用MIT许可证
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/jnjnnjzch/kiana_aligner"
+"Bug Tracker" = "https://github.com/jnjnnjzch/kiana_aligner/issues"
