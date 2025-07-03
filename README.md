@@ -4,6 +4,11 @@
   <strong>K</strong>iana <strong>I</strong>s <strong>A</strong> <strong>N</strong>eural <strong>A</strong>ligner.
 </p>
 
+> **Note for PyPI Admins:** This project is intended for an international audience and a full English README is in progress.
+
+### Project Summary
+KIANA is a Python toolkit designed for neural data alignment in neuroscience research. It provides tools for processing and aligning time-series data from various sources, such as electrophysiology (e.g., spike trains) and imaging (e.g., fMRI), to experimental events or stimuli.
+
 
 一个用于同步、整合与分析异质性神经科学数据（行为学、电生理等）的Python工具包。`kiana` 旨在将神经科学实验中繁琐、易错的数据对齐工作流程变得简单、可靠和可复现。
 
