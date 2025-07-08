@@ -4,6 +4,10 @@
   <strong>K</strong>iana <strong>I</strong>s <strong>A</strong> <strong>N</strong>eural <strong>A</strong>ligner.
 </p>
 
+<p align="center">
+  <img src="assets/Kiana_logo.png" alt="Kiana Logo" width="200">
+</p>
+
 > **Note for PyPI Admins:** This project is intended for an international audience and a full English README is in progress.
 
 ### Project Summary
