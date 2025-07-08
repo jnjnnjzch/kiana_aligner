@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kiana" 
 
-version = "0.1.0a1"
+version = "0.1.0a4"
 
 # 作者信息
 authors = [
@@ -25,7 +25,7 @@ requires-python = ">=3.8"
 
 dependencies = [
     "numpy",
-    "pandas",
+    "pandas>=2.2.3",
     "matplotlib",
     "scipy",
     "dtw-python",
@@ -40,6 +40,10 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+
+[tool.setuptools]
+# 明确告诉 setuptools 只打包 'kiana' 这个目录
+packages = ["kiana"]
 
 [project.urls]
 Homepage = "https://github.com/jnjnnjzch/kiana_aligner"

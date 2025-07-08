@@ -123,7 +123,7 @@ class SpikeTrainAnalyzer:
                 ax.plot(plot_x, rate_trace, color=params['individual_trial_color'], alpha=params['individual_trial_alpha'], lw=1.5, drawstyle=drawstyle)
 
         # 2. 检查窗口时长是否一致，若不一致则不绘制均值和SEM
-        if len(np.unique(self.event_windows[:, 1] - self.event_windows[:, 0])) > 1:
+        if len(np.unique(np.round(self.event_windows[:, 1] - self.event_windows[:, 0], decimals=6))) > 1:
             print("Info: Window durations are not consistent. Mean and SEM are not plotted.")
             return
             
@@ -167,7 +167,7 @@ class SpikeTrainAnalyzer:
         for i, (event_name, relative_times) in enumerate(self._get_relative_events(extra_events)):
             color = colors[i % len(colors)]
             if style == 'rug':
-                ax.plot(relative_times, np.full_like(relative_times, 0.02), transform=ax.get_xaxis_transform(), marker='|', markersize=12, markeredgewidth=2, linestyle='none', color=color, label=event_name, clip_on=False)
+                ax.plot(relative_times, np.full_like(relative_times, 0.02), transform=ax.get_xaxis_transform(), marker='|', markersize=12, markeredgewidth=2, linestyle='none', color=color, label=event_name, clip_on=True)
             elif style == 'raster_tick':
                 event_times_by_trial = [[t] for t in relative_times]
                 ax.eventplot(event_times_by_trial, colors=color, lineoffsets=np.arange(self.num_trials), linelengths=0.8, linewidths=2.0, label=event_name, zorder=3)

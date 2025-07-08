@@ -1,6 +1,5 @@
 # 忽略Python的缓存文件夹
 __pycache__/
-*.egg-info/
 
 # 忽略虚拟环境文件夹（极其重要！）
 venv/
@@ -10,3 +9,9 @@ env/
 # 忽略IDE的配置文件夹
 .vscode/
 .idea/
+
+# 忽略打包和安装过程中生成的文件夹
+*.egg-info/
+build/
+dist/
+wheels/

@@ -87,6 +87,7 @@ class BehavioralProcessor:
             
             segment_df = full_events_df # 先将完整数据赋值给 segment_df
 
+            # 1. 首先，执行切片逻辑 (使用原始列名)
             # 【全新、灵活的切片逻辑】
             slice_rules = item.get('slice_by')
             if slice_rules and isinstance(slice_rules, dict):
@@ -95,19 +96,16 @@ class BehavioralProcessor:
                 for column, criteria in slice_rules.items():
                     if column not in segment_df.columns:
                         logging.warning(f"  Slice column '{column}' not found. Skipping this rule.")
-                        continue
-                    
+                        continue          
                     # 规则1: criteria 是一个双元素元组 -> 范围筛选
                     if isinstance(criteria, tuple) and len(criteria) == 2:
                         start, end = criteria
                         logging.info(f"    Slicing '{column}' for range >= {start} and <= {end}")
                         segment_df = segment_df[(segment_df[column] >= start) & (segment_df[column] <= end)]
-
                     # 规则2: criteria 是一个列表 -> 离散值筛选
                     elif isinstance(criteria, list):
                         logging.info(f"    Slicing '{column}' for discrete values in {criteria}")
                         segment_df = segment_df[segment_df[column].isin(criteria)]
-                    
                     # 规则3: 其他情况 -> 精确值匹配
                     else:
                         logging.info(f"    Slicing '{column}' for exact value == {criteria}")
@@ -116,6 +114,23 @@ class BehavioralProcessor:
             # .copy() 确保我们操作的是一个独立的DataFrame，避免后续出现SettingWithCopyWarning
             segment_df = segment_df.copy()
 
+            # 2. 【移动到这里】然后，标记 Anchor (同样使用原始列名)
+            # 这样用户就可以在 query 中使用 'MyCustomID' 而不是 'TrialID'
+            segment_df['is_anchor'] = False
+            segment_df.sort_values('EventTime', inplace=True, ignore_index=True)
+
+            anchor_query = item.get('anchor_query')
+            if anchor_query:
+                logging.info(f"  Applying anchor query: \"{anchor_query}\"")
+                # query可能会在空DataFrame上失败，增加检查
+                if not segment_df.empty:
+                    anchors = segment_df.query(anchor_query)
+                    segment_df.loc[anchors.index, 'is_anchor'] = True
+            else:
+                logging.info("  No anchor query, all events in segment are anchors.")
+                segment_df['is_anchor'] = True
+
+            # 3. 【移动到后面】在所有筛选和标记都完成后，才处理 Trial ID 的重命名，为统一输出做准备
             trial_id_col_from_loader = item['loader'].trial_id_col
     
             if trial_id_col_from_loader:
@@ -129,23 +144,8 @@ class BehavioralProcessor:
                 else:
                     logging.warning(f"  Loader expected trial ID column '{trial_id_col_from_loader}' but it was not found.")
 
-
+            # 4. 最后，添加元数据并准备合并
             segment_df['segment_name'] = segment_name
-            segment_df['is_anchor'] = False
-
-            segment_df.sort_values('EventTime', inplace=True, ignore_index=True)
-
-            anchor_query = item.get('anchor_query')
-            if anchor_query:
-                logging.info(f"  Applying anchor query: \"{anchor_query}\"")
-                # query可能会在空DataFrame上失败，增加检查
-                if not segment_df.empty:
-                    anchors = segment_df.query(anchor_query)
-                    segment_df.loc[anchors.index, 'is_anchor'] = True
-            else:
-                logging.info("  No anchor query, all events in segment are anchors.")
-                segment_df['is_anchor'] = True
-            
             all_segments_list.append(segment_df)
         
         self.master_timeline_df = pd.concat(all_segments_list, ignore_index=True)
@@ -243,8 +243,6 @@ class BehavioralProcessor:
         
         # 4. 【关键步骤】重命名参照物中的列，以避免在合并时与左侧DataFrame的列名冲突
         ref_events.rename(columns={'EventTime': 'EventTime_ref', 'AbsoluteDateTime': 'AbsoluteDateTime_ref'}, inplace=True)
-
-  
 
         # 5. 使用pd.merge_asof找到每个未知事件在时间上“最近的”参照物
         merged = pd.merge_asof(
@@ -453,14 +451,190 @@ class BehavioralProcessor:
 
         logging.info(f"Rigid translation for '{context_name}' complete.")
 
-    def add_sync_context(self, context_name: str, ephys_times, ephys_indices, sampling_rate: int, match_against: str = 'EventTime', sync_within_trial=True):
+    def _check_match_error(self, context_name: str, tolerance: float = 0.01):
+        """
+        【最终实现版本 - 2025-06-28】
+        综合锚点健康检查工具。本次修改：
+        1. 在Part 1摘要报告中显示真实的间隔位置索引。
+        2. 将Part 2上下文窗口大小从4行修改为3行。
+        """
+        logging.info(f"Performing comprehensive anchor check for context '{context_name}'...")
+        ephys_time_col = f'EphysTime_{context_name}'
+        ephys_indice_col = f'EphysIndice_{context_name}'
+
+        all_anchors_df = self.master_timeline_df[self.master_timeline_df['is_anchor']].copy()
+
+        # --- 第一部分：报告“匹配失败” (质检员A) ---
+        pairing_failures_df = all_anchors_df[all_anchors_df[ephys_time_col].isna()]
+
+        if not pairing_failures_df.empty:
+            logging.warning(f"  -> Found {len(pairing_failures_df)} anchors that failed to pair with ephys signals.")
+            print("\n--- [WARNING] ANCHOR PAIRING FAILURE REPORT ---")
+            print(f"Context: '{context_name}'")
+            print("The following anchors could not be matched to an ephys event and have no ephys time:")
+            with pd.option_context('display.max_rows', None, 'display.width', 150):
+                print(pairing_failures_df)
+            print("--- END OF PAIRING FAILURE REPORT ---\n")
+
+        # --- 第二部分：报告“性能不一致” (质检员B) ---
+        paired_anchors_df = all_anchors_df.dropna(subset=[ephys_time_col]).copy()
+
+        if len(paired_anchors_df) < 2:
+            logging.info("  -> Less than 2 successfully paired anchors. Skipping interval consistency check.")
+            return
+
+        paired_anchors_df.sort_values('EventTime', inplace=True, ignore_index=True)
+
+        beh_times = paired_anchors_df['EventTime'].to_numpy()
+        ephys_times = paired_anchors_df[ephys_time_col].to_numpy()
+
+        beh_intervals = np.diff(beh_times)
+        ephys_intervals = np.diff(ephys_times)
+        # 【修改1】移除 abs()，保留差异的正负号
+        interval_diffs = ephys_intervals - beh_intervals
+
+        # 【修改2】调整判断条件以适应有符号的差异
+        inconsistent_indices = np.where(
+            (interval_diffs > tolerance) | (interval_diffs < -tolerance)
+        )[0]
+
+        if len(inconsistent_indices) > 0:
+            logging.warning(f"  -> Found {len(inconsistent_indices)} inconsistent anchor intervals exceeding tolerance ({tolerance}s).")
+            print("\n--- [WARNING] ANCHOR TIMING INCONSISTENCY REPORT ---")
+            print(f"Context: '{context_name}'")
+
+            # 报告 2a (b 表): 差异摘要
+            print("\nPART 1: Inconsistent Interval Summary")
+            
+            # 【修改】直接使用 inconsistent_indices 作为DataFrame的索引
+            summary_df = pd.DataFrame({
+                'BehaviorInterval': beh_intervals[inconsistent_indices],
+                'EphysInterval': ephys_intervals[inconsistent_indices],
+                'Discrepancy': interval_diffs[inconsistent_indices]
+            }, index=inconsistent_indices)
+            
+            # 【新索引名称】为索引命名，使其意义更明确
+            summary_df.index.name = 'Interval_Index'
+            
+            with pd.option_context('display.precision', 4):
+                print(summary_df)
+
+            # 报告 2b (a 表): 上下文详情
+            print("\nPART 2: Contextual Anchor Data (showing problematic intervals and neighbors)")
+            # ... 确定要显示的行的逻辑不变 ...
+            indices_to_show = set()
+            for idx in inconsistent_indices:
+                start = max(0, idx - 1)
+                end = min(len(paired_anchors_df), idx + 2)
+                indices_to_show.update(range(start, end))
+            
+            context_df = paired_anchors_df.iloc[sorted(list(indices_to_show))]
+            
+            # --- 【列顺序调整】 ---
+            # 1. 定义希望提前的列
+            preferred_order = []
+            if 'TrialID' in context_df.columns:
+                preferred_order.append('TrialID')
+            
+            preferred_order.extend([
+                'EventTime',
+                ephys_time_col,
+                ephys_indice_col
+            ])
+
+            # 2. 获取所有现有列，并从中移除已指定的优先列
+            existing_cols = context_df.columns.tolist()
+            other_cols = [col for col in existing_cols if col not in preferred_order]
+
+            # 3. 组合成新的列顺序
+            new_col_order = preferred_order + other_cols
+            
+            # 4. 应用新的列顺序
+            context_df_reordered = context_df[new_col_order]
+
+            with pd.option_context('display.max_rows', None, 'display.width', 150, 'display.precision', 4):
+                print(context_df_reordered)
+            print("--- END OF TIMING INCONSISTENCY REPORT ---\n")
+        else:
+            logging.info("  -> Anchor timing consistency check passed.")
+
+    def _resolve_ephys_data(self, times, indices, rate):
+        """
+        一个私有辅助函数，用于处理和验证电生理数据三元组 (时间, 索引, 采样率)。
+        根据任意两个已知量，推算出第三个未知量。
+        如果三者都提供，则检查其一致性。
+        如果提供少于两个，则抛出错误。
+        """
+        # 标准化输入，将None转换为空数组以便统一处理
+        times = np.asarray(times) if times is not None else np.array([])
+        indices = np.asarray(indices) if indices is not None else np.array([])
+
+        # --- 情况分析 ---
+        times_provided = times.size > 0
+        indices_provided = indices.size > 0
+        rate_provided = rate is not None and rate > 0
+
+        # 情况1：提供了三者中的两者，推算第三者
+        if times_provided and indices_provided and not rate_provided:
+            logging.info("Calculating sampling_rate from ephys_times and ephys_indices.")
+            if len(times) < 2:
+                raise ValueError("Cannot calculate sampling_rate with less than 2 data points.")
+            # 使用差分的中位数来计算，更稳健，能抵抗个别点的噪声
+            rate = np.nanmedian(np.diff(indices) / np.diff(times))
+            logging.info(f"  -> Calculated sampling_rate: {rate:.2f} Hz")
+        
+        elif times_provided and rate_provided and not indices_provided:
+            logging.info("Calculating ephys_indices from ephys_times and sampling_rate.")
+            indices = np.round(times * rate).astype(np.int64)
+
+        elif indices_provided and rate_provided and not times_provided:
+            logging.info("Calculating ephys_times from ephys_indices and sampling_rate.")
+            times = indices / rate
+            
+        # 情况2：提供了所有三者，进行一致性检查
+        elif times_provided and indices_provided and rate_provided:
+            logging.info("All three ephys data components provided. Checking for consistency.")
+            if len(times) >= 2: # 只有超过2个点才能计算间隔和实际采样率
+                # 1. 基于 times 和 indices 计算实际采样率
+                calculated_rate = np.nanmedian(np.diff(indices) / np.diff(times))
+                # 2. 比较计算出的采样率和用户提供的采样率 (例如，相对误差超过 1e-6 Hz就认为不一致)
+                if not np.isclose(rate, calculated_rate, atol=1e-12):
+                    # 3. 如果不一致，打印警告信息，包含两个值
+                    logging.warning(
+                        "Consistency Warning: The provided sampling_rate seems inconsistent with ephys_times and ephys_indices.\n"
+                        "  -> Provided rate: %.2f Hz\n"
+                        "  -> Calculated rate from data: %.2f Hz\n"
+                        "  -> Proceeding with the user-provided sampling_rate and other data as requested.",
+                        rate, calculated_rate
+                    )
+        
+        # 情况3：提供的信息不足
+        else:
+            raise ValueError("Insufficient ephys data. At least two of [ephys_times, ephys_indices, sampling_rate] must be provided.")
+
+        # 最终长度校验
+        if times.size != indices.size:
+             raise ValueError(f"Ephys times and indices must have the same length. Got {times.size} and {indices.size}.")
+
+        return times, indices, rate
+
+    def add_sync_context(self, context_name: str, ephys_times=None, ephys_indices=None, sampling_rate=30000.0, match_against: str = 'EventTime', sync_within_trial=True):
         """
         为某个Ephys控制器（如Plexon）添加同步上下文。
         如果主时间轴未构建，则使用此上下文作为主参照系来构建它。
         """
-        ephys_times = np.asarray(ephys_times)
-        ephys_indices = np.asarray(ephys_indices)
-
+        # 推算并检验结果
+        try:
+            # --- 调用辅助函数，获取干净、完整的数据 ---
+            ephys_times, ephys_indices, sampling_rate = self._resolve_ephys_data(
+                times=ephys_times, 
+                indices=ephys_indices, 
+                rate=sampling_rate
+            )
+        except ValueError as e:
+            logging.error(f"Failed to resolve ephys data for context '{context_name}': {e}")
+            return self # 出错则直接返回，不继续执行
+        
         if not self._is_timeline_built:
             logging.info(f"Master timeline not built. Using context '{context_name}' as the master reference.")
             self._solve_and_build_timeline_once(ephys_times)
@@ -494,6 +668,9 @@ class BehavioralProcessor:
         self.master_timeline_df.loc[anchor_indices_in_master[valid_mask], time_col] = ephys_times[mapped_ephys_indices]
         self.master_timeline_df.loc[anchor_indices_in_master[valid_mask], indice_col] = ephys_indices[mapped_ephys_indices]
         
+        # 检查匹配情况
+        self._check_match_error(context_name)
+
         # 为所有非锚点事件进行刚性平移
         self._apply_rigid_translation(context_name, sampling_rate, sync_within_trial)
         

@@ -128,6 +128,8 @@ class EphysProcessor:
         for _, row in controller_rows_sorted.iterrows():
             # 计算当前行相对于基准时间的偏移（秒）
             time_offset_seconds = (row["abs_start_time"] - base_time).total_seconds()
+            # 这里有一个先验，采集系统的时间偏移是以分钟为单位的，因此应该四舍五入到60s的整数倍
+            time_offset_seconds = round(time_offset_seconds / 60) * 60
             indice_offset = time_offset_seconds * self.f_s
             
             cum_indices.extend([indice + indice_offset for indice in row["indices"]])
