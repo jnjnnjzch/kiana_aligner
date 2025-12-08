@@ -3,26 +3,13 @@
 # ===================================================================
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=80", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 
 [project]
 name = "kiana" 
-
-version = "0.1.0a4"
-
-# 作者信息
-authors = [
-  { name="ZHOU Chenghao", email="jnjnnjzch@gmail.com" },
-]
-
-description = "Kiana Is A Neural Aligner. A toolkit for synchronizing, integrating, and analyzing heterogeneous neuroscience data (ephys, behaviors, etc.)."
-
-readme = "README.md"
-
-requires-python = ">=3.8"
-
+dynamic = ["version"]
 dependencies = [
     "numpy",
     "pandas>=2.2.3",
@@ -30,11 +17,23 @@ dependencies = [
     "scipy",
     "dtw-python",
 ]
+requires-python = ">=3.8"
+
+authors = [
+  { name="ZHOU Chenghao", email="jnjnnjzch@gmail.com" },
+]
+maintainers = [
+    { name="ZHOU Chenghao", email="jnjnnjzch@gmail.com" },
+]
+description = "Kiana Is A Neural Aligner. A toolkit for synchronizing, integrating, and analyzing heterogeneous neuroscience data (ephys, behaviors, etc.)."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICEN[CS]E*"]
+keywords = ["neuroscience", "alignment", "neural data"]
 
 classifiers = [
-    "Development Status :: 3 - Alpha", # 项目目前处于Alpha开发阶段
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License", # 假设您使用MIT许可证
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering",
@@ -44,6 +43,9 @@ classifiers = [
 [tool.setuptools]
 # 明确告诉 setuptools 只打包 'kiana' 这个目录
 packages = ["kiana"]
+[tool.setuptools_scm]
+version_scheme = "post-release"
+local_scheme = "dirty-tag"
 
 [project.urls]
 Homepage = "https://github.com/jnjnnjzch/kiana_aligner"

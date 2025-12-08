@@ -8,7 +8,7 @@
   <img src="assets/Kiana_logo.png" alt="Kiana Logo" width="200">
 </p>
 
-> **Note for PyPI Admins:** This project is intended for an international audience and a full English README is in progress.
+> This project is intended for an international audience and a full English README is in progress.
 
 ### Project Summary
 KIANA is a Python toolkit designed for neural data alignment in neuroscience research. It provides tools for processing and aligning time-series data from various sources, such as electrophysiology (e.g., spike trains) and imaging (e.g., fMRI), to experimental events or stimuli.
@@ -38,7 +38,7 @@ KIANA is a Python toolkit designed for neural data alignment in neuroscience res
 
 ## 🚀 安装
 
-您可以通过 `pip` 直接从PyPI安装（当发布后）：
+您可以通过 `pip` 直接从PyPI安装：
 ```bash
 pip install kiana
 ```

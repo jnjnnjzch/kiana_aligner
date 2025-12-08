@@ -155,7 +155,7 @@ class EphysProcessor:
             print(f"  -> Generated {len(cum_indices)} cumulative indices.")
         
         print("✅ All controllers processed.")
-        return self.cumulative_results
+        return None # use get_result() to access results
 
     def get_result(self, controller: str) -> Optional[Dict[str, List]]:
         """获取指定控制器的处理结果。"""

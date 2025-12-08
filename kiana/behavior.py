@@ -654,8 +654,9 @@ class BehavioralProcessor:
         mapping = get_paired_ephys_event_index(pairings)
         
         if len(mapping) != len(template_times):
-            logging.warning(f"DTW mapping length mismatch ({len(mapping)} vs {len(template_times)}). Skipping context '{context_name}'.")
-            return self
+            logging.warning(f"DTW mapping length mismatch ({len(mapping)} vs {len(template_times)}). Using conservative method for '{context_name}'.")
+            mapping = get_paired_ephys_event_index(pairings, conservative=True)
+            # return self
         
         time_col = f'EphysTime_{context_name}'
         indice_col = f'EphysIndice_{context_name}'

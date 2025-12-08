@@ -73,7 +73,7 @@ def _purify_pairs(pairs, key_index=0):
             
     return purified_pairs
 
-def get_paired_ephys_event_index(task_ephys_dtw_pairs):
+def get_paired_ephys_event_index(task_ephys_dtw_pairs, conservative=False):
     """
     【最终重构版】
     将DTW配对转换为task索引到ephys索引的映射数组。
@@ -81,12 +81,16 @@ def get_paired_ephys_event_index(task_ephys_dtw_pairs):
     """
     # 原始DTW配对可能包含两种冲突
     
-    # 第一步：清理“一个Ephys对多个Task”的冲突 (key_index=1, 按ephys_id分组)
-    clean_pairs_stage1 = _purify_pairs(task_ephys_dtw_pairs, key_index=1)
+    if not conservative:
+        # 第一步：清理“一个Ephys对多个Task”的冲突 (key_index=1, 按ephys_id分组)
+        clean_pairs_stage1 = _purify_pairs(task_ephys_dtw_pairs, key_index=1)
 
-    # 第二步：清理“一个Task对多个Ephys”的冲突 (key_index=0, 按task_id分组)
-    # 输入是上一阶段的输出
-    final_clean_pairs = _purify_pairs(clean_pairs_stage1, key_index=0)
+        # 第二步：清理“一个Task对多个Ephys”的冲突 (key_index=0, 按task_id分组)
+        # 输入是上一阶段的输出
+        final_clean_pairs = _purify_pairs(clean_pairs_stage1, key_index=0)
+    else:
+        # 保守模式下，直接进行第二步清理
+        final_clean_pairs = _purify_pairs(task_ephys_dtw_pairs, key_index=0)
     
     # 第三步：使用完全纯净的配对列表构建最终数组
     if not final_clean_pairs:

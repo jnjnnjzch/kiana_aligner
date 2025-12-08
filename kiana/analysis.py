@@ -27,7 +27,37 @@ class SpikeTrainAnalyzer:
         }
         self.plot_params.update(kwargs)
         self._precompute_relative_spikes()
+        self._precompute_relative_events()
         self.time_vector, self.rates_matrix, self.calculation_mode, self.bin_size = None, None, None, None
+        vivid_colors = [
+            '#FF1A1A',  # 极鲜红 (Ultra Vivid Red)
+            '#FF80B3',  # 亮粉红 (Bright Pink)
+            '#E6194B',  # 树莓红 (Raspberry Red)
+            '#FFA500',  # 鲜橙色 (Vivid Orange)
+            '#FFD700',  # 金黄色 (Gold)
+            '#B08000',  # 暗金色/赭石色 (Ochre)
+            '#32CD32',  # 酸橙绿 (Lime Green)
+            '#ADFF2F',  # 绿黄色 (Green-Yellow)
+            '#008000',  # 标准绿 (Standard Green)
+            '#00FFFF',  # 青色/水色 (Aqua)
+            '#4363d8',  # 矢车菊蓝 (Cornflower Blue)
+            '#00008B',  # 深蓝 (Dark Blue) - 保留深蓝，因为它与黑色仍有明显区别
+            '#9400D3',  # 暗紫罗兰 (Dark Violet)
+            '#FF00FF',  # 品红/紫红 (Fuchsia)
+            '#E6BEFF',  # 薰衣草紫 (Lavender)
+            '#40E0D0',  # 绿松石 (Turquoise)
+            '#FA8072',  # 鲑鱼色/珊瑚粉 (Salmon)
+        ]
+        self.event_color_map = {}
+        if self.default_events:
+            # 获取matplotlib的默认颜色列表
+            prop_cycler = plt.rcParams['axes.prop_cycle']
+            colors = prop_cycler.by_key()['color']
+            # colors = plt.cm.get_cmap('Paired').colors
+            # colors = vivid_colors
+            # 将每个事件名和一个颜色绑定
+            for i, event_name in enumerate(self.default_events.keys()):
+                self.event_color_map[event_name] = colors[i % len(colors)]
 
     @property
     def rates(self):
@@ -50,6 +80,17 @@ class SpikeTrainAnalyzer:
         for i in range(self.num_trials):
             win_spikes = self.spike_train[(self.spike_train >= self.event_windows[i, 0]) & (self.spike_train < self.event_windows[i, 1])]
             self.relative_spikes.append(win_spikes - self.align_points[i])
+    
+    def _precompute_relative_events(self):
+        self.relative_events = {}
+        for event_name, event_times in self.default_events.items():
+            relative_event_times = []
+            for i in range(self.num_trials):
+                trial_start = self.event_windows[i, 0]
+                trial_end = self.event_windows[i, 1]
+                trial_event_times = event_times[(event_times >= trial_start) & (event_times < trial_end)]
+                relative_event_times.append(trial_event_times - self.align_points[i])
+            self.relative_events[event_name] = relative_event_times
 
     def _determine_time_window(self, analysis_window=None):
         if analysis_window is None:
@@ -63,14 +104,84 @@ class SpikeTrainAnalyzer:
         else:
             return analysis_window[0], analysis_window[1]
 
+    def calculate_rates_event_window(self, event_series, mode='gaussian', **kwargs):
+        # 这个calculate rates是计算event_window范围内的
+        self.calculation_mode = mode
+        if mode == 'gaussian':
+            std = kwargs.get('gaussian_std', 0.02); 
+            time_bin_size = kwargs.get('high_res_bin', 0.001)
+            post_processor = lambda rate_arr: gaussian_filter1d(rate_arr, sigma=std / time_bin_size); 
+            self.bin_size = None
+        elif mode == 'binned':
+            time_bin_size = kwargs.get('bin_size', 0.1)
+            post_processor = lambda rate_arr: rate_arr; 
+            self.bin_size = time_bin_size
+        else: raise ValueError(f"Mode '{mode}' not recognized. Use 'gaussian' or 'binned'.")
+        all_trial_rates = []
+        for rel_spikes, event_windows in zip(event_series, self.event_windows):
+            min_t = 0
+            max_t = event_windows[1] - event_windows[0]
+            self.time_vector = np.arange(min_t, max_t, time_bin_size)
+            histogram_bins = np.append(self.time_vector, self.time_vector[-1] + time_bin_size)
+            counts, _ = np.histogram(rel_spikes, bins=histogram_bins)
+            initial_rate = counts / time_bin_size
+            all_trial_rates.append(post_processor(initial_rate))
+        # print(f"Rates calculated via '{mode}' mode.")
+        return all_trial_rates
+
+    def calculate_stimulus_vector(self, stimulus, bin_size):
+        stimulus_vector = []
+        def _run_for_one_dim():
+            for sti_time, event_window in zip(stimulus, self.event_windows):
+                num_bins = int(np.ceil((event_window[1] - event_window[0]) / bin_size))
+                stim_vector = np.zeros(num_bins)
+                if np.any(np.isnan(sti_time)):
+                    stimulus_vector.append(stim_vector)
+                else:
+                    stim_rel = sti_time - event_window[0]
+                    stim_bin = int(np.floor(stim_rel / bin_size))
+                    stim_vector[stim_bin] = 1
+                    stimulus_vector.append(stim_vector)
+            return stimulus_vector
+        def _run_for_two_dim():
+            for sti_time, event_window in zip(stimulus, self.event_windows):
+                num_bins = int(np.ceil((event_window[1] - event_window[0]) / bin_size))
+                stim_vector = np.zeros(num_bins)
+                if np.any(np.isnan(sti_time)):
+                    stimulus_vector.append(stim_vector)
+                else:
+                    stim_start_rel = sti_time[0] - event_window[0]
+                    stim_end_rel = sti_time[1] - event_window[0]
+                    start_bin = int(np.floor(stim_start_rel / bin_size))
+                    end_bin = int(np.ceil(stim_end_rel / bin_size))
+                    stim_vector[start_bin:end_bin] = 1
+                    stimulus_vector.append(stim_vector)
+            return stimulus_vector
+        if stimulus.shape[0] != self.num_trials:
+            raise ValueError("Length of `stimulus` must match the number of trials.")
+        if len(stimulus.shape) == 1:
+            return _run_for_one_dim()
+        elif len(stimulus.shape) == 2:
+            if stimulus.shape[1] == 2:
+                return _run_for_two_dim()
+            elif stimulus.shape[1] == 1:
+                return _run_for_one_dim()
+            else:
+                raise ValueError("When `stimulus` is 2D, its second dimension must be 1 or 2.")
+        else:
+            raise ValueError("`stimulus` must be either 1D or 2D array-like.")
+
     def calculate_rates(self, mode='gaussian', analysis_window=None, **kwargs):
         self.calculation_mode = mode
         if mode == 'gaussian':
-            std = kwargs.get('gaussian_std', 0.02); time_bin_size = kwargs.get('high_res_bin', 0.001)
-            post_processor = lambda rate_arr: gaussian_filter1d(rate_arr, sigma=std / time_bin_size); self.bin_size = None
+            std = kwargs.get('gaussian_std', 0.02); 
+            time_bin_size = kwargs.get('high_res_bin', 0.001)
+            post_processor = lambda rate_arr: gaussian_filter1d(rate_arr, sigma=std / time_bin_size); 
+            self.bin_size = None
         elif mode == 'binned':
             time_bin_size = kwargs.get('bin_size', 0.1)
-            post_processor = lambda rate_arr: rate_arr; self.bin_size = time_bin_size
+            post_processor = lambda rate_arr: rate_arr; 
+            self.bin_size = time_bin_size
         else: raise ValueError(f"Mode '{mode}' not recognized. Use 'gaussian' or 'binned'.")
         min_t, max_t = self._determine_time_window(analysis_window)
         self.time_vector = np.arange(min_t, max_t, time_bin_size)
@@ -86,7 +197,7 @@ class SpikeTrainAnalyzer:
 
     # --- Private Generic Helpers ---
     def _setup_ax(self, ax=None):
-        if ax is None: return plt.subplots(figsize=(12, 7))
+        if ax is None: return   
         return ax.get_figure(), ax
     def _calculate_baseline_rate(self, baseline_window):
         if baseline_window is None: return None
@@ -96,15 +207,47 @@ class SpikeTrainAnalyzer:
             total_spikes += np.sum((self.spike_train >= abs_start) & (self.spike_train < abs_end))
             total_duration += (abs_end - abs_start)
         return total_spikes / total_duration if total_duration > 0 else 0
+    
     def _get_relative_events(self, extra_events):
-        if extra_events is None: return
+        """
+        Calculates relative event times by associating events to trials based on
+        whether they fall within the trial's specific event_window.
+        This is the corrected logic based on user feedback.
+        """
+        if extra_events is None:
+            return
+        # 提取所有窗口的开始和结束时间，方便调用
+        window_starts = self.event_windows[:, 0]
+        window_ends = self.event_windows[:, 1]
+        # 遍历每一种事件类型 (例如: '注视点出现')
         for event_name, absolute_times in extra_events.items():
             absolute_times = np.asarray(absolute_times)
-            if len(absolute_times) != self.num_trials:
-                print(f"Warning: Skipping event '{event_name}' due to length mismatch.")
+            if absolute_times.size == 0:
                 continue
-            yield event_name, absolute_times - self.align_points
-    def _unify_legends(self, axes, target_ax):
+            events_col = absolute_times[:, np.newaxis] # (N_events, 1)
+            starts_row = window_starts[np.newaxis, :] # (1, N_trials)
+            ends_row = window_ends[np.newaxis, :] # (1, N_trials)
+
+            hit_matrix = (events_col >= starts_row) & (events_col < ends_row) # hit_matrix[j, i] 为 True 代表事件j落在了窗口i中
+            
+            #    event_indices 是事件的索引 (行)
+            #    trial_indices 是trial的索引 (列)
+            event_indices, trial_indices = np.where(hit_matrix)
+            
+            # 如果没有任何匹配，则跳到下一种事件类型
+            if event_indices.size == 0:
+                continue
+
+            # 4. 一步计算所有相对时间
+            #    根据索引，直接选取对应的事件时间和对齐时间
+            matched_event_times = absolute_times[event_indices]
+            matched_align_points = self.align_points[trial_indices]
+            
+            relative_times = matched_event_times - matched_align_points
+            
+            # 5. Yield 最终结果
+            yield event_name, relative_times, trial_indices
+    def _unify_legends(self, axes, target_ax, legend_out=True):
         handles, labels = [], []
         for ax in axes:
             if ax:
@@ -112,7 +255,10 @@ class SpikeTrainAnalyzer:
                 handles.extend(h); labels.extend(l)
         if handles:
             by_label = dict(zip(labels, handles))
-            target_ax.legend(by_label.values(), by_label.keys(), prop=self.font_prop, loc='upper right')
+            if legend_out:
+                target_ax.legend(by_label.values(), by_label.keys(), prop=self.font_prop, loc='upper left', bbox_to_anchor=(1.02, 1))
+            else:
+                target_ax.legend(by_label.values(), by_label.keys(), prop=self.font_prop, loc='upper right')
 
     # --- Private PSTH Plotting Helpers ---
     def _draw_rate_traces(self, ax, plot_x, drawstyle, params, show_individual=True, trial_labels=None):
@@ -162,15 +308,17 @@ class SpikeTrainAnalyzer:
         if baseline_rate is not None: ax.axhline(baseline_rate, ls='--', color=params['baseline_color'], label=f'Baseline ({baseline_rate:.2f} Hz)')
         ax.axvline(0, ls='--', color=params['align_line_color'], label='Alignment (t=0)')
     def _draw_extra_events(self, ax, extra_events, style='rug'):
-        prop_cycler = plt.rcParams['axes.prop_cycle']
-        colors = prop_cycler.by_key()['color']
-        for i, (event_name, relative_times) in enumerate(self._get_relative_events(extra_events)):
-            color = colors[i % len(colors)]
+        if not hasattr(self, 'event_color_map'):
+            self.event_color_map = {}
+    
+        for i, (event_name, relative_times, trial_indices) in enumerate(self._get_relative_events(extra_events)):
+            color = self.event_color_map[event_name]
             if style == 'rug':
                 ax.plot(relative_times, np.full_like(relative_times, 0.02), transform=ax.get_xaxis_transform(), marker='|', markersize=12, markeredgewidth=2, linestyle='none', color=color, label=event_name, clip_on=True)
             elif style == 'raster_tick':
                 event_times_by_trial = [[t] for t in relative_times]
-                ax.eventplot(event_times_by_trial, colors=color, lineoffsets=np.arange(self.num_trials), linelengths=0.8, linewidths=2.0, label=event_name, zorder=3)
+                ax.eventplot(event_times_by_trial, colors=color, lineoffsets=trial_indices, linelengths=0.8, linewidths=2.0, label=event_name, zorder=3)
+
     def _finalize_psth_plot(self, ax, plot_x, style):
         title = getattr(ax, 'get_title', lambda: '')() # Get existing title before overwriting
         ax.set_title(title, fontsize=16, fontproperties=self.font_prop)
@@ -195,8 +343,10 @@ class SpikeTrainAnalyzer:
             else: ax_raster = fig.add_subplot(1, 1, 1)
         return fig, ax_raster, ax_psth
     def _draw_raster_spikes(self, ax, **raster_kwargs):
-        spike_color = raster_kwargs.get('spike_color', 'black'); spike_lw = raster_kwargs.get('spike_lw', 1.0)
+        spike_color = raster_kwargs.get('spike_color', 'black'); 
+        spike_lw = raster_kwargs.get('spike_lw', 1.0)
         ax.eventplot(self.relative_spikes, colors=spike_color, lineoffsets=np.arange(self.num_trials), linelengths=0.8, linewidths=spike_lw)
+        # ax.eventplot(self.relative_spikes, lineoffsets=np.arange(self.num_trials), linelengths=0.05, linewidths=spike_lw)
     def _set_raster_yticklabels(self, ax, trial_labels):
         ax.set_ylim(self.num_trials - 0.5, -0.5)
         if not trial_labels:
@@ -272,6 +422,7 @@ class SpikeTrainAnalyzer:
         # will automatically handle this new parameter without explicit changes here.
 
         trial_labels = kwargs.pop('trial_labels', None)  # Pop from kwargs
+        legend_out = kwargs.pop('legend_out', True)  # Pop legend_out to control legend visibility
         psth_kwargs = {k: v for k, v in kwargs.items() if k in self.plot_psth.__code__.co_varnames or k in ['baseline_window', 'extra_events', 'title', 'mean_trace_color']}
         raster_kwargs = {k: v for k, v in kwargs.items() if k not in psth_kwargs}
         # trial_labels = raster_kwargs.pop('trial_labels', None) # Pop from raster_kwargs
@@ -296,11 +447,12 @@ class SpikeTrainAnalyzer:
         if show_psth:
             # The `trial_labels` will be passed correctly via psth_kwargs
             self.plot_psth(ax=ax_psth, show_individual=False, trial_labels=trial_labels, **psth_kwargs)
-            ax_psth.set_title(""); ax_psth.set_xlabel("")
+            ax_psth.set_title(""); 
+            ax_psth.set_xlabel("")
             ax_psth.legend().set_visible(False)
         
         fig.suptitle(suptitle, fontsize=16, fontproperties=self.font_prop)
-        self._unify_legends([ax_raster, ax_psth] if ax_psth else [ax_raster], ax_raster)
+        self._unify_legends([ax_raster, ax_psth] if ax_psth else [ax_raster], ax_raster, legend_out)
         if show_psth: ax_psth.set_xlabel("Time from Alignment (s)", fontproperties=self.font_prop)
         else: ax_raster.set_xlabel("Time from Alignment (s)", fontproperties=self.font_prop)
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
