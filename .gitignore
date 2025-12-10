@@ -16,5 +16,3 @@ build/
 dist/
 wheels/
 data/
-config
-searxng/
