@@ -172,7 +172,9 @@ class SpikeTrainAnalyzer:
             if not np.any(np.isnan(sti_time)):
                 stim_rel = sti_time - event_window[0]
                 stim_bin = int(np.floor(stim_rel / bin_size))
-                stim_vector[stim_bin] = 1
+                # Bounds checking: ensure index is within valid range
+                if 0 <= stim_bin < len(stim_vector):
+                    stim_vector[stim_bin] = 1
             return stim_vector
         
         # Process 2D stimulus (time intervals)
@@ -183,7 +185,11 @@ class SpikeTrainAnalyzer:
                 stim_end_rel = sti_time[1] - event_window[0]
                 start_bin = int(np.floor(stim_start_rel / bin_size))
                 end_bin = int(np.ceil(stim_end_rel / bin_size))
-                stim_vector[start_bin:end_bin] = 1
+                # Bounds checking: clip indices to valid range
+                start_bin = max(0, start_bin)
+                end_bin = min(len(stim_vector), end_bin)
+                if start_bin < end_bin:  # Only assign if valid range
+                    stim_vector[start_bin:end_bin] = 1
             return stim_vector
         
         # Select appropriate processing function based on stimulus shape
