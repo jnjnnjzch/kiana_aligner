@@ -104,19 +104,35 @@ class SpikeTrainAnalyzer:
         else:
             return analysis_window[0], analysis_window[1]
 
-    def calculate_rates_event_window(self, event_series, mode='gaussian', **kwargs):
-        # 这个calculate rates是计算event_window范围内的
+    def _setup_calculation_mode(self, mode, **kwargs):
+        """
+        Helper method to set up calculation mode parameters and return configuration.
+        Eliminates code duplication between calculate_rates and calculate_rates_event_window.
+        
+        Args:
+            mode (str): Calculation mode ('gaussian' or 'binned')
+            **kwargs: Additional parameters for the mode
+            
+        Returns:
+            tuple: (time_bin_size, post_processor) where post_processor is a function
+        """
         self.calculation_mode = mode
         if mode == 'gaussian':
-            std = kwargs.get('gaussian_std', 0.02); 
+            std = kwargs.get('gaussian_std', 0.02)
             time_bin_size = kwargs.get('high_res_bin', 0.001)
-            post_processor = lambda rate_arr: gaussian_filter1d(rate_arr, sigma=std / time_bin_size); 
+            post_processor = lambda rate_arr: gaussian_filter1d(rate_arr, sigma=std / time_bin_size)
             self.bin_size = None
         elif mode == 'binned':
             time_bin_size = kwargs.get('bin_size', 0.1)
-            post_processor = lambda rate_arr: rate_arr; 
+            post_processor = lambda rate_arr: rate_arr
             self.bin_size = time_bin_size
-        else: raise ValueError(f"Mode '{mode}' not recognized. Use 'gaussian' or 'binned'.")
+        else:
+            raise ValueError(f"Mode '{mode}' not recognized. Use 'gaussian' or 'binned'.")
+        return time_bin_size, post_processor
+
+    def calculate_rates_event_window(self, event_series, mode='gaussian', **kwargs):
+        # 这个calculate rates是计算event_window范围内的
+        time_bin_size, post_processor = self._setup_calculation_mode(mode, **kwargs)
         all_trial_rates = []
         for rel_spikes, event_windows in zip(event_series, self.event_windows):
             min_t = 0
@@ -130,59 +146,67 @@ class SpikeTrainAnalyzer:
         return all_trial_rates
 
     def calculate_stimulus_vector(self, stimulus, bin_size):
-        stimulus_vector = []
-        def _run_for_one_dim():
-            for sti_time, event_window in zip(stimulus, self.event_windows):
-                num_bins = int(np.ceil((event_window[1] - event_window[0]) / bin_size))
-                stim_vector = np.zeros(num_bins)
-                if np.any(np.isnan(sti_time)):
-                    stimulus_vector.append(stim_vector)
-                else:
-                    stim_rel = sti_time - event_window[0]
-                    stim_bin = int(np.floor(stim_rel / bin_size))
-                    stim_vector[stim_bin] = 1
-                    stimulus_vector.append(stim_vector)
-            return stimulus_vector
-        def _run_for_two_dim():
-            for sti_time, event_window in zip(stimulus, self.event_windows):
-                num_bins = int(np.ceil((event_window[1] - event_window[0]) / bin_size))
-                stim_vector = np.zeros(num_bins)
-                if np.any(np.isnan(sti_time)):
-                    stimulus_vector.append(stim_vector)
-                else:
-                    stim_start_rel = sti_time[0] - event_window[0]
-                    stim_end_rel = sti_time[1] - event_window[0]
-                    start_bin = int(np.floor(stim_start_rel / bin_size))
-                    end_bin = int(np.ceil(stim_end_rel / bin_size))
-                    stim_vector[start_bin:end_bin] = 1
-                    stimulus_vector.append(stim_vector)
-            return stimulus_vector
+        """
+        Calculate stimulus vector for each trial.
+        
+        Args:
+            stimulus: Array of stimulus times (1D) or time intervals (2D with 2 columns)
+            bin_size: Size of time bins
+            
+        Returns:
+            list: Stimulus vectors for each trial
+        """
         if stimulus.shape[0] != self.num_trials:
             raise ValueError("Length of `stimulus` must match the number of trials.")
+        
+        stimulus_vector = []
+        
+        # Helper to create base stimulus vector for a trial
+        def _create_base_vector(event_window):
+            num_bins = int(np.ceil((event_window[1] - event_window[0]) / bin_size))
+            return np.zeros(num_bins)
+        
+        # Process 1D stimulus (single time points)
+        def _process_single_time(sti_time, event_window):
+            stim_vector = _create_base_vector(event_window)
+            if not np.any(np.isnan(sti_time)):
+                stim_rel = sti_time - event_window[0]
+                stim_bin = int(np.floor(stim_rel / bin_size))
+                stim_vector[stim_bin] = 1
+            return stim_vector
+        
+        # Process 2D stimulus (time intervals)
+        def _process_interval(sti_time, event_window):
+            stim_vector = _create_base_vector(event_window)
+            if not np.any(np.isnan(sti_time)):
+                stim_start_rel = sti_time[0] - event_window[0]
+                stim_end_rel = sti_time[1] - event_window[0]
+                start_bin = int(np.floor(stim_start_rel / bin_size))
+                end_bin = int(np.ceil(stim_end_rel / bin_size))
+                stim_vector[start_bin:end_bin] = 1
+            return stim_vector
+        
+        # Select appropriate processing function based on stimulus shape
         if len(stimulus.shape) == 1:
-            return _run_for_one_dim()
+            process_fn = _process_single_time
         elif len(stimulus.shape) == 2:
             if stimulus.shape[1] == 2:
-                return _run_for_two_dim()
+                process_fn = _process_interval
             elif stimulus.shape[1] == 1:
-                return _run_for_one_dim()
+                process_fn = _process_single_time
             else:
                 raise ValueError("When `stimulus` is 2D, its second dimension must be 1 or 2.")
         else:
             raise ValueError("`stimulus` must be either 1D or 2D array-like.")
+        
+        # Apply processing function to all trials
+        for sti_time, event_window in zip(stimulus, self.event_windows):
+            stimulus_vector.append(process_fn(sti_time, event_window))
+        
+        return stimulus_vector
 
     def calculate_rates(self, mode='gaussian', analysis_window=None, **kwargs):
-        self.calculation_mode = mode
-        if mode == 'gaussian':
-            std = kwargs.get('gaussian_std', 0.02); 
-            time_bin_size = kwargs.get('high_res_bin', 0.001)
-            post_processor = lambda rate_arr: gaussian_filter1d(rate_arr, sigma=std / time_bin_size); 
-            self.bin_size = None
-        elif mode == 'binned':
-            time_bin_size = kwargs.get('bin_size', 0.1)
-            post_processor = lambda rate_arr: rate_arr; 
-            self.bin_size = time_bin_size
-        else: raise ValueError(f"Mode '{mode}' not recognized. Use 'gaussian' or 'binned'.")
+        time_bin_size, post_processor = self._setup_calculation_mode(mode, **kwargs)
         min_t, max_t = self._determine_time_window(analysis_window)
         self.time_vector = np.arange(min_t, max_t, time_bin_size)
         all_trial_rates = []
