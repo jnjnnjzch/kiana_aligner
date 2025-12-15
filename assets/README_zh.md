@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jnjnnjzch/kiana_aligner/blob/main/README.md">⬅️ 返回英文原版 (Back to English README)</a>
+  <a href="https://github.com/jnjnnjzch/kiana_aligner/blob/main/README.md">⬅️ 返回英文版 (Back to English README)</a>
 </p>
 
 
