@@ -67,12 +67,17 @@ class MatLoader(BaseLoader):
         except FileNotFoundError:
             logging.error(f"File not found: {filepath}")
             raise # 将异常抛出，让用户知道问题所在
-        if 'Trial1' not in data or 'TrialRecord' not in data:
-            raise ValueError(f"Invalid .mat file structure: Missing 'Trial1' or 'TrialRecord' keys. Data keys: {data.keys()}")
+        if 'Trial1' not in data:
+            raise ValueError(f"Invalid .mat file structure: Missing 'Trial1' key. Data keys: {data.keys()}")
         start_datetime = _array_to_datetime(data['Trial1']['TrialDateTime'])
         
         all_records = []
-        total_trial_num = data['TrialRecord']['CurrentTrialNumber']
+        if "TrialRecord" not in data:
+            total_trial_num = 1
+            while f"Trial{total_trial_num}" in data:
+                total_trial_num += 1
+        else:
+            total_trial_num = data["TrialRecord"]["CurrentTrialNumber"]
         
         for trial_id in range(1, total_trial_num):
             trial_key = f'Trial{trial_id}'
