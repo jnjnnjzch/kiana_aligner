@@ -2,7 +2,7 @@
 
 import sys
 # 让用户可以直接通过 from kiana import ... 来使用核心类
-from .loaders import MatLoader, DataFrameLoader, TrcLoader
+from .loaders import MatLoader, DataFrameLoader, TrcLoader, SeqLoader
 from .ephys import EphysProcessor
 from .behavior import BehavioralProcessor
 from .analysis import SpikeTrainAnalyzer

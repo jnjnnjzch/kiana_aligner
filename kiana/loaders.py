@@ -4,6 +4,8 @@ import logging
 from scipy.io import loadmat
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+import struct
+import os
 
 def _array_to_datetime(arr):
     # 提取各字段（转换为整数）
@@ -301,4 +303,81 @@ class TrcLoader(BaseLoader):
         df = df.rename(columns={'time': 'EventTime'})
 
         return df
+
+
+class SeqLoader(BaseLoader):
+    """
+    一个加载器，直接使用传入的seq文件作为数据源。
+    使用异步预取方法提取时间戳，提升大文件处理效率。
+    """
+
+    def __init__(self, trial_id_col: str = None):
+        super().__init__(trial_id_col=trial_id_col)
+        logging.info(f"SeqLoader initialized. Expecting trial ID in column '{self.trial_id_col}'.")
+
+    def load(self, file_name: str, **kwargs) -> pd.DataFrame:
+        """
+        加载并解析seq文件，提取时间戳信息。
+        通过异步预取方法提升大文件处理效率。
+        生成包含帧号、事件时间和参考时间的DataFrame。
+        参考时间转换为指定时区的时间戳。
+        允许用户通过kwargs: Timezone指定时区，默认为'Asia/Shanghai'。
+        """
+        logging.info("SeqLoader: Using seq file.")
+        timestamps = self._extract_time_async_prefetch(file_name)
+        frames = np.arange(1, len(timestamps) + 1)
+        refer_time = timestamps - timestamps[0]
+        df = pd.DataFrame({
+            'frame': frames,
+            'EventTime': refer_time,
+            'ReferenceTime': pd.to_datetime(timestamps, unit='s')
+        })
+
+        # --- 可选优化：如果你需要特定的时区 (比如北京时间) ---
+        TimeZone = kwargs.get('Timezone', 'Asia/Shanghai')
+        df['ReferenceTime'] = df['ReferenceTime'].dt.tz_localize('UTC').dt.tz_convert(TimeZone)
+        return df
     
+    def _parser_seq_header(self, seq_file):
+        with open(seq_file, 'rb') as f:
+            header_bytes = f.read(1024)
+        magicnumber = hex(struct.unpack_from('<L', header_bytes, 0)[0])
+        if magicnumber != '0xfeed':
+            raise ValueError("Not a valid .seq file")
+        img_info = struct.unpack_from('<5L', header_bytes, 564)
+        image_size_bytes = img_info[0] # Offset 564 (纯图像数据大小)
+        total_frames = img_info[2]   # Offset 572
+        true_img_size = img_info[4] # Offset 580 (包含padding的图像大小)
+        padding_size = true_img_size - image_size_bytes - 8 # 8 bytes for timestamp
+        return total_frames, true_img_size, image_size_bytes, padding_size
+    
+    def _extract_time_async_prefetch(self, SEQ_FILE, BATCH_SIZE=4096):
+        HEADER_SIZE = 8192         
+        TOTAL_FRAMES, STRIDE, IMG_SIZE, _ = self._parser_seq_header(SEQ_FILE)    
+        dt = np.dtype([('sec', '<u4'), ('ms', '<u2'), ('us', '<u2')])
+        raw_data = np.zeros(TOTAL_FRAMES, dtype=dt)
+        BATCH_SIZE = min(BATCH_SIZE, TOTAL_FRAMES)
+        with open(SEQ_FILE, 'rb', buffering=0) as f:
+            fd = f.fileno()
+            try:
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_RANDOM)
+            except:
+                pass
+
+            for batch_start in range(0, TOTAL_FRAMES, BATCH_SIZE):
+                batch_end = min(batch_start + BATCH_SIZE, TOTAL_FRAMES)
+                current_batch_size = batch_end - batch_start
+
+                for i in range(current_batch_size):
+                    frame_idx = batch_start + i
+                    offset = HEADER_SIZE + (frame_idx * STRIDE) + IMG_SIZE
+                    os.posix_fadvise(fd, offset, 8, os.POSIX_FADV_WILLNEED)
+
+                for i in range(current_batch_size):
+                    frame_idx = batch_start + i
+                    offset = HEADER_SIZE + (frame_idx * STRIDE) + IMG_SIZE
+                    data_bytes = os.pread(fd, 8, offset)
+                    raw_data[frame_idx] = np.frombuffer(data_bytes, dtype=dt)[0]
+        
+        timestamps = raw_data['sec'] + raw_data['ms']/1000.0 + raw_data['us']/1.0e6
+        return timestamps
