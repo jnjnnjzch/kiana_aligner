@@ -231,7 +231,6 @@ class BehavioralProcessor:
         
         unknown_dt_indices = self.master_timeline_df.index[~known_dt_mask]
         if unknown_dt_indices.empty:
-            print("No heterogeneous datetimes to resolve.")
             logging.info("No heterogeneous datetimes to resolve.")
             return
 
@@ -453,11 +452,17 @@ class BehavioralProcessor:
 
     def _check_match_error(self, context_name: str, tolerance: float = 0.01):
         """
-        【最终实现版本 - 2025-06-28】
-        综合锚点健康检查工具。本次修改：
-        1. 在Part 1摘要报告中显示真实的间隔位置索引。
-        2. 将Part 2上下文窗口大小从4行修改为3行。
+        【最终实现版本 - 2026-01-03】
+        综合锚点健康检查工具。
+        逻辑重构：
+        1. 错误展示：保留 Contextual Anchor Data 表格，用于展示被污染的行（Dirty Set）。
+        2. 安全报告：基于“Dirty Set”的补集计算“Safe Intervals”，并按 Trial 逻辑进行三明治合并报告。
         """
+        import numpy as np
+        import pandas as pd
+        from itertools import groupby
+        from operator import itemgetter
+
         logging.info(f"Performing comprehensive anchor check for context '{context_name}'...")
         ephys_time_col = f'EphysTime_{context_name}'
         ephys_indice_col = f'EphysIndice_{context_name}'
@@ -468,14 +473,12 @@ class BehavioralProcessor:
         pairing_failures_df = all_anchors_df[all_anchors_df[ephys_time_col].isna()]
 
         if not pairing_failures_df.empty:
-            logging.warning(f"  -> Found {len(pairing_failures_df)} anchors that failed to pair with ephys signals.")
-            print("\n--- [WARNING] ANCHOR PAIRING FAILURE REPORT ---")
-            print(f"Context: '{context_name}'")
-            print("The following anchors could not be matched to an ephys event and have no ephys time:")
+            logging.info(f"  -> Found {len(pairing_failures_df)} anchors that failed to pair with ephys signals.")
+            logging.info("\n--- [WARNING] ANCHOR PAIRING FAILURE REPORT ---")
+            logging.info(f"Context: '{context_name}'")
             with pd.option_context('display.max_rows', None, 'display.width', 150):
-                print(pairing_failures_df)
-            print("--- END OF PAIRING FAILURE REPORT ---\n")
-
+                logging.info(pairing_failures_df)
+            logging.info("--- END OF PAIRING FAILURE REPORT ---\n")
         # --- 第二部分：报告“性能不一致” (质检员B) ---
         paired_anchors_df = all_anchors_df.dropna(subset=[ephys_time_col]).copy()
 
@@ -487,74 +490,171 @@ class BehavioralProcessor:
 
         beh_times = paired_anchors_df['EventTime'].to_numpy()
         ephys_times = paired_anchors_df[ephys_time_col].to_numpy()
-
-        beh_intervals = np.diff(beh_times)
-        ephys_intervals = np.diff(ephys_times)
-        # 【修改1】移除 abs()，保留差异的正负号
-        interval_diffs = ephys_intervals - beh_intervals
-
-        # 【修改2】调整判断条件以适应有符号的差异
+        
+        # 计算差异
+        interval_diffs = np.diff(ephys_times) - np.diff(beh_times)
         inconsistent_indices = np.where(
             (interval_diffs > tolerance) | (interval_diffs < -tolerance)
         )[0]
 
         if len(inconsistent_indices) > 0:
-            logging.warning(f"  -> Found {len(inconsistent_indices)} inconsistent anchor intervals exceeding tolerance ({tolerance}s).")
-            print("\n--- [WARNING] ANCHOR TIMING INCONSISTENCY REPORT ---")
+            logging.info(f"  -> Found {len(inconsistent_indices)} inconsistent anchor intervals.")
+            logging.info("\n--- [WARNING] ANCHOR TIMING INCONSISTENCY REPORT ---")
             print(f"Context: '{context_name}'")
 
-            # 报告 2a (b 表): 差异摘要
-            print("\nPART 1: Inconsistent Interval Summary")
-            
-            # 【修改】直接使用 inconsistent_indices 作为DataFrame的索引
-            summary_df = pd.DataFrame({
-                'BehaviorInterval': beh_intervals[inconsistent_indices],
-                'EphysInterval': ephys_intervals[inconsistent_indices],
-                'Discrepancy': interval_diffs[inconsistent_indices]
-            }, index=inconsistent_indices)
-            
-            # 【新索引名称】为索引命名，使其意义更明确
-            summary_df.index.name = 'Interval_Index'
-            
-            with pd.option_context('display.precision', 4):
-                print(summary_df)
-
-            # 报告 2b (a 表): 上下文详情
-            print("\nPART 2: Contextual Anchor Data (showing problematic intervals and neighbors)")
-            # ... 确定要显示的行的逻辑不变 ...
+            # ---------------------------------------------------------
+            # 步骤 1: 确定“污染区” (The Dirty Set)
+            # 逻辑：直接复用 Context 表的显示逻辑，凡是表里出现的，都算污染
+            # ---------------------------------------------------------
             indices_to_show = set()
             for idx in inconsistent_indices:
                 start = max(0, idx - 1)
                 end = min(len(paired_anchors_df), idx + 2)
                 indices_to_show.update(range(start, end))
             
+            # 打印 Context 表 (这是你的原始需求，保留作为详细排查证据)
+            logging.info("\nPART 1: Contextual Anchor Data (The Dirty Set)")
             context_df = paired_anchors_df.iloc[sorted(list(indices_to_show))]
             
-            # --- 【列顺序调整】 ---
-            # 1. 定义希望提前的列
+            # 列排序优化
             preferred_order = []
-            if 'TrialID' in context_df.columns:
-                preferred_order.append('TrialID')
+            if 'TrialID' in context_df.columns: preferred_order.append('TrialID')
+            preferred_order.extend(['EventTime', ephys_time_col, ephys_indice_col])
+            new_col_order = preferred_order + [c for c in context_df.columns if c not in preferred_order]
             
-            preferred_order.extend([
-                'EventTime',
-                ephys_time_col,
-                ephys_indice_col
-            ])
-
-            # 2. 获取所有现有列，并从中移除已指定的优先列
-            existing_cols = context_df.columns.tolist()
-            other_cols = [col for col in existing_cols if col not in preferred_order]
-
-            # 3. 组合成新的列顺序
-            new_col_order = preferred_order + other_cols
-            
-            # 4. 应用新的列顺序
-            context_df_reordered = context_df[new_col_order]
-
             with pd.option_context('display.max_rows', None, 'display.width', 150, 'display.precision', 4):
-                print(context_df_reordered)
-            print("--- END OF TIMING INCONSISTENCY REPORT ---\n")
+                logging.info(context_df[new_col_order])
+
+            # ---------------------------------------------------------
+            # 步骤 2: 计算“安全区” (The Safe Set) —— 核心补集逻辑
+            # ---------------------------------------------------------
+            total_indices = set(range(len(paired_anchors_df)))
+            safe_indices = sorted(list(total_indices - indices_to_show))
+            safe_indices_set = set(safe_indices) # 用于快速查找
+
+            # 辅助函数：List[int] -> "Start-End" 字符串
+            def _to_range_str(nums):
+                if not nums: return ""
+                ranges = []
+                for k, g in groupby(enumerate(nums), lambda x: x[0]-x[1]):
+                    group = list(map(itemgetter(1), g))
+                    ranges.append(f"{group[0]}-{group[-1]}" if group[0] != group[-1] else str(group[0]))
+                return ", ".join(ranges)
+
+            logging.info("\nPART 2: Safe Interval Report (The Clean Set)")
+            
+            # 2a. 输出第一行：物理 Index
+            print(f"Index: {_to_range_str(safe_indices)}")
+
+            # ---------------------------------------------------------
+            # 步骤 3: 诊断 Trial 状态 & 三明治合并 (Sandwich Logic)
+            # ---------------------------------------------------------
+            if 'TrialID' in paired_anchors_df.columns:
+                # 3a. 诊断阶段 (Diagnose)
+                trial_nodes = []
+                # 按 TrialID 及其连续性分组 (防止 T1...T2...T1 这种情况被错误合并)
+                group_key = (paired_anchors_df['TrialID'].fillna('__NAN__') != paired_anchors_df['TrialID'].fillna('__NAN__').shift()).cumsum()
+                
+                for _, group in paired_anchors_df.groupby(group_key):
+                    tid = group['TrialID'].iloc[0]
+                    is_nan_block = pd.isna(tid)
+                    
+                    # 该 Trial 在原始数据中的所有 index
+                    full_indices = group.index.tolist()
+                    # 该 Trial 幸存下来的 safe index
+                    valid_indices = [i for i in full_indices if i in safe_indices_set]
+                    
+                    if not valid_indices:
+                        continue # 如果整个 Trial 都被污染了，就不出现在 Safe Report 里
+                    
+                    range_str = _to_range_str(valid_indices)
+                    
+                    if is_nan_block:
+                        trial_nodes.append({
+                            'type': 'nan', 
+                            'str': f"nan({range_str})", 
+                            'id': None, 
+                            'status': 'nan'
+                        })
+                    else:
+                        # 判断完整性: 幸存数量 == 原始数量
+                        # (注意：因为 Indices_to_show 包含连续区间，这里简单比较长度即可，
+                        # 除非 indices_to_show 恰好只挖掉了中间一个点，那也是 Partial)
+                        is_perfect = (len(valid_indices) == len(full_indices))
+                        
+                        display_str = f"T{int(tid)}" if is_perfect else f"T{int(tid)}({range_str})"
+                        status = 'perfect' if is_perfect else 'partial'
+                        
+                        trial_nodes.append({
+                            'type': 'trial',
+                            'str': display_str,
+                            'id': int(tid),
+                            'status': status
+                        })
+
+                # 3b. 组装阶段 (Assemble with Sandwich Rule)
+                final_parts = []
+                buffer = [] # 待合并序列
+
+                def flush_buffer():
+                    nonlocal buffer
+                    if not buffer: return
+                    
+                    i = 0
+                    while i < len(buffer):
+                        # 贪婪搜索最长合并链
+                        best_j = i
+                        for j in range(i + 1, len(buffer)):
+                            # 1. 检查 ID 连续性 (T1, T2, T3...)
+                            if buffer[j]['id'] != buffer[j-1]['id'] + 1:
+                                break 
+                            
+                            # 2. 检查夹心层 (Middle Layer must be Perfect)
+                            # 如果 j = i+1，中间层为空，自动满足
+                            is_sandwich_valid = True
+                            if j > i + 1:
+                                for k in range(i + 1, j):
+                                    if buffer[k]['status'] != 'perfect':
+                                        is_sandwich_valid = False
+                                        break
+                            
+                            if not is_sandwich_valid:
+                                # 注意：三明治法则断了，但我们不能 break 外层循环，
+                                # 因为可能 T1(bad)-T2(bad) 没法合，但 T2(bad)-T3(ok) 也没法合...
+                                # 这里的逻辑是：必须找到从 i 开始能连到的最远 j
+                                # 简单的做法：只要中间坏了一个，就不能连到更远了
+                                break 
+                            
+                            best_j = j
+                        
+                        # 输出
+                        if best_j > i:
+                            final_parts.append(f"{buffer[i]['str']}-{buffer[best_j]['str']}")
+                            i = best_j + 1
+                        else:
+                            final_parts.append(buffer[i]['str'])
+                            i += 1
+                    buffer = []
+
+                for node in trial_nodes:
+                    if node['type'] == 'nan':
+                        flush_buffer() # 异类隔离
+                        final_parts.append(node['str'])
+                    else:
+                        # 是 Trial
+                        if buffer:
+                            # 如果 ID 不连续，必须先结算
+                            if node['id'] != buffer[-1]['id'] + 1:
+                                flush_buffer()
+                        buffer.append(node)
+                
+                flush_buffer() # 结算最后剩余
+                print(f"Trial: {', '.join(final_parts)}")
+
+            else:
+                print("Trial: (TrialID column missing) \n")
+
+            logging.info("--- END OF TIMING INCONSISTENCY REPORT ---\n")
         else:
             logging.info("  -> Anchor timing consistency check passed.")
 
