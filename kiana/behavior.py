@@ -649,7 +649,7 @@ class BehavioralProcessor:
                         buffer.append(node)
                 
                 flush_buffer() # 结算最后剩余
-                print(f"Trial: {', '.join(final_parts)}")
+                print(f"Trial: {', '.join(final_parts)} \n")
 
             else:
                 print("Trial: (TrialID column missing) \n")
