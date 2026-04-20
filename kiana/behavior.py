@@ -470,15 +470,20 @@ class BehavioralProcessor:
         all_anchors_df = self.master_timeline_df[self.master_timeline_df['is_anchor']].copy()
 
         # --- 第一部分：报告“匹配失败” (质检员A) ---
+        # 列排序优化
+        preferred_order = []
+        if 'TrialID' in all_anchors_df.columns: preferred_order.append('TrialID')
+        preferred_order.extend(['EventTime', ephys_time_col, ephys_indice_col])
+    
         pairing_failures_df = all_anchors_df[all_anchors_df[ephys_time_col].isna()]
 
         if not pairing_failures_df.empty:
-            logging.info(f"  -> Found {len(pairing_failures_df)} anchors that failed to pair with ephys signals.")
-            logging.info("\n--- [WARNING] ANCHOR PAIRING FAILURE REPORT ---")
-            logging.info(f"Context: '{context_name}'")
+            logging.warning(f"  -> Found {len(pairing_failures_df)} anchors that failed to pair with ephys signals.")
+            logging.warning("\n--- [WARNING] ANCHOR PAIRING FAILURE REPORT ---")
+            logging.warning(f"Context: '{context_name}'")
             with pd.option_context('display.max_rows', None, 'display.width', 150):
-                logging.info(pairing_failures_df)
-            logging.info("--- END OF PAIRING FAILURE REPORT ---\n")
+                logging.warning(pairing_failures_df[preferred_order])
+            logging.warning("--- END OF PAIRING FAILURE REPORT ---\n")
         # --- 第二部分：报告“性能不一致” (质检员B) ---
         paired_anchors_df = all_anchors_df.dropna(subset=[ephys_time_col]).copy()
 
@@ -498,8 +503,8 @@ class BehavioralProcessor:
         )[0]
 
         if len(inconsistent_indices) > 0:
-            logging.info(f"  -> Found {len(inconsistent_indices)} inconsistent anchor intervals.")
-            logging.info("\n--- [WARNING] ANCHOR TIMING INCONSISTENCY REPORT ---")
+            logging.warning(f"  -> Found {len(inconsistent_indices)} inconsistent anchor intervals.")
+            logging.warning("\n--- [WARNING] ANCHOR TIMING INCONSISTENCY REPORT ---")
             print(f"Context: '{context_name}'")
 
             # ---------------------------------------------------------
@@ -508,22 +513,16 @@ class BehavioralProcessor:
             # ---------------------------------------------------------
             indices_to_show = set()
             for idx in inconsistent_indices:
-                start = max(0, idx - 1)
+                start = max(0, idx)  # 只需要关注下文 无需上文
                 end = min(len(paired_anchors_df), idx + 2)
                 indices_to_show.update(range(start, end))
             
             # 打印 Context 表 (这是你的原始需求，保留作为详细排查证据)
-            logging.info("\nPART 1: Contextual Anchor Data (The Dirty Set)")
-            context_df = paired_anchors_df.iloc[sorted(list(indices_to_show))]
-            
-            # 列排序优化
-            preferred_order = []
-            if 'TrialID' in context_df.columns: preferred_order.append('TrialID')
-            preferred_order.extend(['EventTime', ephys_time_col, ephys_indice_col])
-            new_col_order = preferred_order + [c for c in context_df.columns if c not in preferred_order]
+            logging.warning("\nPART 1: Contextual Anchor Data (The Dirty Set)")
+            context_df = paired_anchors_df.iloc[sorted(list(indices_to_show))]            
             
             with pd.option_context('display.max_rows', None, 'display.width', 150, 'display.precision', 4):
-                logging.info(context_df[new_col_order])
+                logging.warning(context_df[preferred_order])  # 只显示关键列，减少视觉干扰
 
             # ---------------------------------------------------------
             # 步骤 2: 计算“安全区” (The Safe Set) —— 核心补集逻辑
@@ -541,7 +540,7 @@ class BehavioralProcessor:
                     ranges.append(f"{group[0]}-{group[-1]}" if group[0] != group[-1] else str(group[0]))
                 return ", ".join(ranges)
 
-            logging.info("\nPART 2: Safe Interval Report (The Clean Set)")
+            logging.warning("\nPART 2: Safe Interval Report (The Clean Set)")
             
             # 2a. 输出第一行：物理 Index
             print(f"Index: {_to_range_str(safe_indices)}")
@@ -654,9 +653,9 @@ class BehavioralProcessor:
             else:
                 print("Trial: (TrialID column missing) \n")
 
-            logging.info("--- END OF TIMING INCONSISTENCY REPORT ---\n")
+            logging.warning("--- END OF TIMING INCONSISTENCY REPORT ---\n")
         else:
-            logging.info("  -> Anchor timing consistency check passed.")
+            logging.warning("  -> Anchor timing consistency check passed.")
 
     def _resolve_ephys_data(self, times, indices, rate):
         """

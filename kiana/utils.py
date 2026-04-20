@@ -5,9 +5,8 @@ from collections import defaultdict
 def get_pair_via_dtw(template, query, step_pattern="symmetric2", verbose=False):
     template = np.diff(template)
     query = np.diff(query)
-    dist_fun = lambda x_val, y_val: abs(x_val - y_val)
     alignment_default = dtw.dtw(template, query,
-                        dist_method=dist_fun,
+                        dist_method='euclidean', # 放弃使用自定义dist_fun，使用内置的 'euclidean' 或 'cityblock'绝对值差在数学上等价于欧氏距离
                         step_pattern=step_pattern, # 或者 rabinerJuangStepPattern(6, "c"))\
                         keep_internals=True)
     # 获取结果
