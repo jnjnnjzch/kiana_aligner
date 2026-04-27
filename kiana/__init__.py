@@ -6,6 +6,7 @@ from .loaders import MatLoader, DataFrameLoader, TrcLoader, SeqLoader
 from .ephys import EphysProcessor
 from .behavior import BehavioralProcessor
 from .analysis import SpikeTrainAnalyzer
+from .utils import get_pair_via_dtw, get_pair_via_dtw_minimal
 
 # 定义版本号，这是一个好习惯
 if sys.version_info >= (3, 8):
