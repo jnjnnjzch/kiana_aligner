@@ -5,7 +5,7 @@ from collections import defaultdict
 def get_pair_via_dtw(template, query, step_pattern="symmetric2", verbose=False):
     template = np.diff(template)
     query = np.diff(query)
-    dist_fun = lambda x_val, y_val: abs(x_val - y_val)
+    dist_fun = lambda x_val, y_val: abs(x_val - y_val).item() # .item()将numpy的标量转换为Python的原生数值，确保与dtw库兼容( dtw调用scipy.cdist()利用双重循环计算，输出结果为矩阵；)
     alignment_default = dtw.dtw(template, query,
                         dist_method=dist_fun,
                         step_pattern=step_pattern, # 或者 rabinerJuangStepPattern(6, "c"))\
