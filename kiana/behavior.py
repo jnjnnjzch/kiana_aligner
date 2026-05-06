@@ -508,7 +508,7 @@ class BehavioralProcessor:
             # ---------------------------------------------------------
             indices_to_show = set()
             for idx in inconsistent_indices:
-                start = max(0, idx - 1)
+                start = max(0, idx) # 污染区无需纳入上文
                 end = min(len(paired_anchors_df), idx + 2)
                 indices_to_show.update(range(start, end))
             
