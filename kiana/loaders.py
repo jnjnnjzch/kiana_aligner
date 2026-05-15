@@ -188,12 +188,11 @@ class TrcLoader(BaseLoader):
     """一个简单的加载器，直接使用传入的trc文件作为数据源。"""
 
     def __init__(self, trial_id_col: str = None, pure: bool = False):
-        # 
         super().__init__(trial_id_col=trial_id_col)
         self.pure = pure
         logging.info(f"TrcLoader initialized. Expecting trial ID in column '{self.trial_id_col}'.")
 
-    def load(self, file_name: str, check:bool=True, **kwargs) -> pd.DataFrame:
+    def load(self, file_name: str, check: bool = True, **kwargs) -> pd.DataFrame:
         logging.info("TrcLoader: Using trc file.")
 
         total_hand_points = kwargs.get('total_hand_points', 8)
@@ -211,55 +210,87 @@ class TrcLoader(BaseLoader):
         else:
             raise ValueError("hand_name should be either a string or a list of strings or an empty list.")
         if total_hand_num > 1 and type(total_hand_points) == int:
-                total_hand_points = [total_hand_points] * total_hand_num
+            total_hand_points = [total_hand_points] * total_hand_num
         elif total_hand_num == 1 and type(total_hand_points) == int:
             total_hand_points = [total_hand_points]
 
-        lines = []
+        # 这里只读取前6行头部
+        header_lines = []
         with open(file_name, 'r') as file:
-            for line in file:
-                lines.append(line.strip())
+            for _ in range(6):
+                header_lines.append(file.readline().strip())
+        split_header = [line.split('\t') for line in header_lines]
 
-        split_lines = [line.split('\t') for line in lines]
+        # 解析 config
         config = {}
-        for i in range(len(split_lines[1])):
-            config[split_lines[1][i]] = split_lines[2][i]
+        for i in range(len(split_header[1])):
+            config[split_header[1][i]] = split_header[2][i]
 
+        # 解析 part 和 num_labeled_points
         part = []
-        for num_labeled_points in range(len(split_lines[3])):
-            if "unlabel" in split_lines[3][num_labeled_points]:
+        num_labeled_points = 0
+        for num_labeled_points in range(len(split_header[3])):
+            if "unlabel" in split_header[3][num_labeled_points]:
                 break
-            elif len(split_lines[3][num_labeled_points]) > 0 and num_labeled_points > 1:
-                part.append(split_lines[3][num_labeled_points])
+            elif len(split_header[3][num_labeled_points]) > 0 and num_labeled_points > 1:
+                part.append(split_header[3][num_labeled_points])
 
-        num_labeled_points = num_labeled_points-2
+        num_labeled_points = num_labeled_points - 2
         logging.info(f"num of labeled recorded points: {num_labeled_points}")
         logging.info(f"length of part: {len(part)}")
         for i in range(len(part)):
             logging.info(f"part{i+1}:{part[i]}")
 
-        data = np.array(split_lines[6:]).astype(np.float32)
-        columns = ["frame", "time"] + split_lines[4][:num_labeled_points]
-        rec = pd.DataFrame(data[:,:num_labeled_points+2], columns=columns)
-        rec["time"] = rec["time"]-rec["time"].values[0]
+        columns = ["frame", "time"] + split_header[4][:num_labeled_points]
 
-        sum_temp_all = np.array([np.sum(np.hstack((rec[f"X{i+1}"].values,rec[f"Y{i+1}"].values,rec[f"Z{i+1}"].values))) for i in range(int((rec.shape[1]-2)/3))])
+        # 用 pandas 读取数据
+        total_cols = num_labeled_points + 2
+        rec = pd.read_csv(
+            file_name,
+            sep='\t',
+            skiprows=6,
+            header=None,
+            usecols=range(total_cols),
+            dtype=np.float64,  # 指定为 float32 会造成数值溢出，因此指定为 float64
+            low_memory=False
+        )
+        rec.columns = columns
+        rec["time"] = rec["time"] - rec["time"].values[0]
+
+        print("finish loading and parsing")
+
+        num_points = (rec.shape[1] - 2) // 3
+        x_cols = [f"X{i+1}" for i in range(num_points)]
+        y_cols = [f"Y{i+1}" for i in range(num_points)]
+        z_cols = [f"Z{i+1}" for i in range(num_points)]
+        sum_temp_all = (rec[x_cols].abs().sum(axis=0) +
+                        rec[y_cols].abs().sum(axis=0) +
+                        rec[z_cols].abs().sum(axis=0)).values
         idx_to_traverse = np.where(sum_temp_all != 0)[0]
+
         column_idx_with_data_hand = []
         column_idx_with_data_body = []
+
+        # 改动3：添加索引保护，避免 part 越界（忽略未标记点）
         for i in idx_to_traverse:
+            if i >= len(part):   # 如果当前点没有对应的标签名（即未标记点），直接跳过
+                continue
             if body_name in part[i]:
                 column_idx_with_data_body.append(i+1)
 
         if total_hand_num == 1:
             for i in idx_to_traverse:
-                if (body_name not in part[i]): 
+                if i >= len(part):
+                    continue
+                if (body_name not in part[i]):
                     if (len(hand_name)==0) or (hand_name[0] in part[i]):
                         column_idx_with_data_hand.append(i+1)
         elif total_hand_num > 1:
             for j in range(total_hand_num):
                 hand_j = []
                 for i in idx_to_traverse:
+                    if i >= len(part):
+                        continue
                     if (body_name not in part[i]) and (hand_name[j] in part[i]):
                         hand_j.append(i+1)
                 hand_j = sorted(hand_j)
@@ -276,7 +307,10 @@ class TrcLoader(BaseLoader):
         trigger_points = np.array(column_idx_with_data_body)
         trigger_columns = np.array([[f"X{i}",f"Y{i}",f"Z{i}"] for i in trigger_points]).reshape([1,-1])
         for i in range(len(trigger_points)):
-            logging.info(f"Choose point {trigger_points[i]} as {part[trigger_points[i]-1]}")
+            # 同样增加保护，避免 part 越界（触发点一定在 part 范围内，但以防万一）
+            idx = trigger_points[i] - 1
+            if idx < len(part):
+                logging.info(f"Choose point {trigger_points[i]} as {part[idx]}")
         logging.info(trigger_columns)
 
         if total_hand_num == 1:
@@ -285,7 +319,9 @@ class TrcLoader(BaseLoader):
                 chosen_points = np.array([1])
             chosen_columns = np.array([[f"X{i}",f"Y{i}",f"Z{i}"] for i in chosen_points]).reshape([1,-1])
             for i in range(len(chosen_points)):
-                logging.info(f"Choose point {chosen_points[i]} as {part[chosen_points[i]-1]}")
+                idx = chosen_points[i] - 1
+                if idx < len(part):
+                    logging.info(f"Choose point {chosen_points[i]} as {part[idx]}")
             logging.info(chosen_columns)
 
             hand_traj = pd.DataFrame()
@@ -301,7 +337,9 @@ class TrcLoader(BaseLoader):
             chosen_columns = [np.array([[f"X{i}",f"Y{i}",f"Z{i}"] for i in chosen_points[j]]).reshape([1,-1]) for j in range(total_hand_num)]
             for i in range(len(chosen_points)):
                 for j in range(len(chosen_points[i])):
-                    logging.info(f"Choose point {chosen_points[i][j]} as {part[chosen_points[i][j]-1]}")
+                    idx = chosen_points[i][j] - 1
+                    if idx < len(part):
+                        logging.info(f"Choose point {chosen_points[i][j]} as {part[idx]}")
             logging.info(chosen_columns)
 
             hand_traj = pd.DataFrame()
@@ -311,40 +349,47 @@ class TrcLoader(BaseLoader):
                 for item in single_hand:
                     hand_traj[item] = rec[item]
 
+        print("finish checking, all good")
+
         trigger_df = pd.DataFrame()
         trigger_df['time'] = rec['time']
         trigger_df['frame'] = rec['frame']
         trigger_df["final_trigger"] = 0
         for i in column_idx_with_data_body:
-            trigger_df[part[i-1]] = np.where(rec[[f"X{i}",f"Y{i}",f"Z{i}"]].sum(axis=1) == 0, 0, 1)
+            # 只有 body 点一定在 part 内，但为避免异常仍加保护
+            idx = i - 1
+            if idx < len(part):
+                trigger_df[part[idx]] = np.where(rec[[f"X{i}",f"Y{i}",f"Z{i}"]].sum(axis=1) == 0, 0, 1)
             trigger_df["final_trigger"] = trigger_df["final_trigger"] + np.abs(rec[[f"X{i}",f"Y{i}",f"Z{i}"]].sum(axis=1))
-            # trigger_df["final_trigger"] = trigger_df["final_trigger"] * np.abs(rec[[f"X{i}",f"Y{i}",f"Z{i}"]].sum(axis=1))
 
         trigger_df["final_trigger"] = np.where(trigger_df["final_trigger"] == 0, 0, 1)
+        trigger = trigger_df["final_trigger"].values
+        diff = np.diff(np.concatenate(([0], trigger, [0])))
+        onset_idx = np.where(diff == 1)[0] - 1
+        offset_idx = np.where(diff == -1)[0] - 1
+
+        trigger_df["label"] = "None"
+        if len(onset_idx) > 0:
+            trigger_df.loc[onset_idx, "label"] = "Trigger_Onset"
+        if len(offset_idx) > 0:
+            trigger_df.loc[offset_idx, "label"] = "Trigger_Offset"
+
+        time_vals = trigger_df["time"].values
+        data_rate = float(config["DataRate"])
         continous_trigger = []
         trigger_downside = []
-        flag = 0
-        trigger_df["label"] = "None"
-        for i in range(len(trigger_df["final_trigger"].values)):
-            if trigger_df["final_trigger"].values[i] == 1:
-                if flag == 0:
-                    step_temp = i
-                flag = 1
-            if trigger_df["final_trigger"].values[i] == 0 and flag == 1:
-                dict_temp = {}
-                tp = trigger_df["time"].values[step_temp]
-                dict_temp["start"] = f"{tp:.4f}"
-                tp = trigger_df["time"].values[i]
-                dict_temp["end"] = f"{tp:.4f}"
-                trigger_downside.append(tp)
-                tp = trigger_df["time"].values[step_temp]
-                tp = trigger_df["time"].values[i] - trigger_df["time"].values[step_temp] + 1.0/float(config["DataRate"])
-                dict_temp["length"] = f"{tp:.4f}"
-                continous_trigger.append(dict_temp)
-                trigger_df.loc[step_temp, "label"] = "Trigger_Onset"
-                trigger_df.loc[i, "label"] = "Trigger_Offset"
-                flag = 0
+        for start, end in zip(onset_idx, offset_idx):
+            start_time = time_vals[start]
+            end_time = time_vals[end]
+            dict_temp = {
+                "start": f"{start_time:.4f}",
+                "end": f"{end_time:.4f}",
+                "length": f"{end_time - start_time + 1.0/data_rate:.4f}"
+            }
+            continous_trigger.append(dict_temp)
+            trigger_downside.append(end_time)
 
+        print("finish packing")
         logging.info(continous_trigger)
         logging.info(trigger_downside)
 
@@ -357,7 +402,6 @@ class TrcLoader(BaseLoader):
         df['AbsoluteDateTime'] = pd.NaT
 
         return df
-
 
 class SeqLoader(BaseLoader):
     """
