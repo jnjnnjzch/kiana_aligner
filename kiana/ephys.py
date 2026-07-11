@@ -45,16 +45,31 @@ class EphysProcessor:
     def _parse_raw_data(self, raw_dict: dict, value_col_name: str) -> pd.DataFrame:
         """解析原始的嵌套字典数据为DataFrame（内部方法）。"""
         parsed_list = []
+        dict_version = raw_dict.get("__dict_version__", "v1")
         for key, sub_dict in raw_dict.items():
+            # 跳过文件头字段
+            if str(key).startswith("__"):
+                continue
             controller = str(key).split("/")[-2]
+
             for key2, value in sub_dict.items():
-                parsed_list.append({
+                row = {
                     "filepath": key,
                     "filename": key2,
-                    value_col_name: value,
                     "abs_start_time": datetime.strptime(key2, "Temp_%y%m%d_%H%M%S"),
                     "controller": controller,
-                })
+                }
+
+                if dict_version == "v1":
+                    row[value_col_name] = value
+                elif dict_version == "v2":
+                    row[value_col_name] = value["data"]
+                    # 解析meta数据
+                    meta = value["meta"].copy()
+                    row.update(meta)
+
+                parsed_list.append(row)
+
         return pd.DataFrame(parsed_list)
 
     def load_and_merge_data(self, data_col_id: int = -1):
@@ -69,7 +84,7 @@ class EphysProcessor:
         time_data = self._parse_raw_data(time_dict, "time")
         indice_data = self._parse_raw_data(indice_dict, "indices")
         
-        merged_data = pd.merge(time_data, indice_data, on=["filepath", "filename", "abs_start_time", "controller"])
+        merged_data = pd.merge(time_data, indice_data, on=["filepath", "filename", "abs_start_time", "controller"], suffixes=("", "_indice"))
 
         merged_data["time"] = merged_data["time"].apply(lambda x: x[data_col_id])
         merged_data["indices"] = merged_data["indices"].apply(lambda x: x[data_col_id])
@@ -125,16 +140,31 @@ class EphysProcessor:
         # 将第一个记录段的开始时间作为基准时间 0
         base_time = controller_rows_sorted.iloc[0]["abs_start_time"]
 
-        for _, row in controller_rows_sorted.iterrows():
-            # 计算当前行相对于基准时间的偏移（秒）
-            time_offset_seconds = (row["abs_start_time"] - base_time).total_seconds()
-            # 这里有一个先验，采集系统的时间偏移是以分钟为单位的，因此应该四舍五入到60s的整数倍
-            time_offset_seconds = round(time_offset_seconds / 60) * 60
-            indice_offset = time_offset_seconds * self.f_s
-            
-            cum_indices.extend([indice + indice_offset for indice in row["indices"]])
-            cum_times.extend([t + time_offset_seconds for t in row["time"]])
+        # 检查是不是这个probe上所有的file行都有num_sample
+        if "num_sample" not in controller_rows_sorted.columns or controller_rows_sorted["num_sample"].isnull().any():
+            print(f"⚠️ Warning: Some rows for controller '{controller_rows_sorted.iloc[0]['controller']}' are missing 'num_sample'. Falling into v1 logic, which may cause errors")
 
+            for _, row in controller_rows_sorted.iterrows():
+                # 计算当前行相对于基准时间的偏移（秒）
+                time_offset_seconds = (row["abs_start_time"] - base_time).total_seconds()
+                # 这里有一个先验，采集系统的时间偏移是以分钟为单位的，因此应该四舍五入到60s的整数倍
+                time_offset_seconds = round(time_offset_seconds / 60) * 60
+                indice_offset = time_offset_seconds * self.f_s
+                
+                cum_indices.extend([indice + indice_offset for indice in row["indices"]])
+                cum_times.extend([t + time_offset_seconds for t in row["time"]])
+
+        else:
+            cumulative_indices_offset = 0
+            for _, row in controller_rows_sorted.iterrows():
+                # 计算当前行相对于基准时间的偏移（秒）
+                indice_offset = cumulative_indices_offset
+                time_offset_seconds = indice_offset / self.f_s
+                
+                cum_indices.extend([int(indice + indice_offset) for indice in row["indices"]])
+                cum_times.extend([t + time_offset_seconds for t in row["time"]])
+
+                cumulative_indices_offset = cumulative_indices_offset + row["num_sample"]
         return cum_indices, cum_times
 
     def process_controllers(self) -> Dict[str, Dict]:
